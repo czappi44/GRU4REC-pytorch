@@ -1,18 +1,19 @@
+import os
 import argparse
-import torch
 import lib
 import numpy as np
-import os
 import datetime
+import pandas as pd
+import torch
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--hidden_size', default=100, type=int) #Literature uses 100 / 1000 --> better is 100
 parser.add_argument('--num_layers', default=3, type=int) #1 hidden layer
 parser.add_argument('--batch_size', default=50, type=int) #50 in first paper and 32 in second paper
-parser.add_argument('--dropout_input', default=0, type=float) #0.5 for TOP and 0.3 for BPR
-parser.add_argument('--dropout_hidden', default=0.5, type=float) #0.5 for TOP and 0.3 for BPR
+parser.add_argument('--dropout_input', default=0.0, type=float) #0.5 for TOP and 0.3 for BPR
+parser.add_argument('--dropout_hidden', default=0.0, type=float) #0.5 for TOP and 0.3 for BPR
 parser.add_argument('--n_epochs', default=5, type=int) #number of epochs (10 in literature)
-parser.add_argument('--k_eval', default=20, type=int) #value of K durig Recall and MRR Evaluation
+parser.add_argument('--m', '--measure', type=int, nargs='+', default=[20])
 # parse the optimizer arguments
 parser.add_argument('--optimizer_type', default='Adagrad', type=str) #Optimizer --> Adagrad is the best according to literature
 parser.add_argument('--final_act', default='tanh', type=str) #Final Activation Function
@@ -39,6 +40,10 @@ parser.add_argument('--valid_data', default='recSys15Valid.txt', type=str)
 parser.add_argument("--is_eval", action='store_true') #should be used during testing and eliminated during training
 parser.add_argument('--load_model', default=None,  type=str)
 parser.add_argument('--checkpoint_dir', type=str, default='checkpoint')
+
+parser.add_argument('--eval_hidden_reset', default=False, action='store_true')
+parser.add_argument('--use_correct_loss', default=False, action='store_true')
+parser.add_argument('--use_correct_mask_reset', default=False, action='store_true')
 
 # Get the arguments
 args = parser.parse_args()
@@ -85,13 +90,12 @@ def init_model(model):
 
 
 def main():
+    print(pd.DataFrame({'Args':list(args.__dict__.keys()), 'Values':list(args.__dict__.values())}))
     print("Loading train data from {}".format(os.path.join(args.data_folder, args.train_data)))
+    train_data = lib.Dataset(os.path.join(args.data_folder, args.train_data), sep='\t', session_key='SessionId', item_key='ItemId', time_key='Time')
     print("Loading valid data from {}".format(os.path.join(args.data_folder, args.valid_data)))
+    valid_data = lib.Dataset(os.path.join(args.data_folder, args.valid_data), sep='\t', session_key='SessionId', item_key='ItemId', time_key='Time', itemmap=train_data.itemmap)
 
-    train_data = lib.Dataset(os.path.join(args.data_folder, args.train_data))
-    valid_data = lib.Dataset(os.path.join(args.data_folder, args.valid_data), itemmap=train_data.itemmap)
-    make_checkpoint_dir()
-        
     #set all the parameters according to the defined arguments
     input_size = len(train_data.items)
     hidden_size = args.hidden_size
@@ -111,12 +115,12 @@ def main():
     n_epochs = args.n_epochs
     time_sort = args.time_sort
     #loss function
-    loss_function = lib.LossFunction(loss_type=loss_type, use_cuda=args.cuda) #cuda is used with cross entropy only
+    loss_function = lib.LossFunction(loss_type=loss_type, use_cuda=args.cuda, use_correct_loss=args.use_correct_loss) #cuda is used with cross entropy only
     if not args.is_eval: #training
         #Initialize the model
         model = lib.GRU4REC(input_size, hidden_size, output_size, final_act=final_act,
                             num_layers=num_layers, use_cuda=args.cuda, batch_size=batch_size,
-                            dropout_input=dropout_input, dropout_hidden=dropout_hidden, embedding_dim=embedding_dim)
+                            dropout_input=dropout_input, dropout_hidden=dropout_hidden, embedding_dim=embedding_dim, use_correct_loss=args.use_correct_loss)
         #weights initialization
         init_model(model)
         #optimizer
@@ -124,7 +128,7 @@ def main():
                                   weight_decay=weight_decay, momentum=momentum, eps=eps)
         #trainer class
         trainer = lib.Trainer(model, train_data=train_data, eval_data=valid_data, optim=optimizer,
-                              use_cuda=args.cuda, loss_func=loss_function, batch_size=batch_size, args=args)
+                              use_cuda=args.cuda, loss_func=loss_function, batch_size=batch_size, args=args, use_correct_mask_reset=args.use_correct_mask_reset)
         print('#### START TRAINING....')
         trainer.train(0, n_epochs - 1)
     else: #testing
@@ -136,9 +140,10 @@ def main():
                 checkpoint = torch.load(args.load_model, map_location=lambda storage, loc: storage)
             model = checkpoint["model"]
             model.gru.flatten_parameters()
-            evaluation = lib.Evaluation(model, loss_function, use_cuda=args.cuda, k = args.k_eval)
-            loss, recall, mrr = evaluation.eval(valid_data, batch_size)
-            print("Final result: recall = {:.2f}, mrr = {:.2f}".format(recall, mrr))
+            for k in args.m:
+                evaluation = lib.Evaluation(model, loss_function, use_cuda=args.cuda, k = k, eval_hidden_reset=args.eval_hidden_reset, use_correct_mask_reset=args.use_correct_mask_reset)
+                loss, recall, mrr = evaluation.eval(valid_data, batch_size)
+                print(f"Recall@{k}: {recall:.8f} MRR@{k}: {mrr:.8f}")
         else:
             print("No Pretrained Model was found!")
 

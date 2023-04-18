@@ -3,7 +3,7 @@ import torch
 
 class GRU4REC(nn.Module):
     def __init__(self, input_size, hidden_size, output_size, num_layers=1, final_act='tanh',
-                 dropout_hidden=.5, dropout_input=0, batch_size=50, embedding_dim=-1, use_cuda=False):
+                 dropout_hidden=.5, dropout_input=0, batch_size=50, embedding_dim=-1, use_cuda=False, use_correct_loss=False):
         super(GRU4REC, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
@@ -15,6 +15,8 @@ class GRU4REC(nn.Module):
         self.batch_size = batch_size
         self.use_cuda = use_cuda
         self.device = torch.device('cuda' if use_cuda else 'cpu')
+        self.use_correct_loss = use_correct_loss
+
         self.onehot_buffer = self.init_emb()
         self.h2o = nn.Linear(hidden_size, output_size)
         self.create_final_activation(final_act)
@@ -23,6 +25,7 @@ class GRU4REC(nn.Module):
             self.gru = nn.GRU(self.embedding_dim, self.hidden_size, self.num_layers, dropout=self.dropout_hidden)
         else:
             self.gru = nn.GRU(self.input_size, self.hidden_size, self.num_layers, dropout=self.dropout_hidden)
+        self.drop_hidden = nn.Dropout(p=dropout_hidden)
         self = self.to(self.device)
 
     def create_final_activation(self, final_act):
@@ -31,13 +34,18 @@ class GRU4REC(nn.Module):
         elif final_act == 'relu':
             self.final_activation = nn.ReLU()
         elif final_act == 'softmax':
-            self.final_activation = nn.Softmax()
+            if self.use_correct_loss:
+                self.final_activation = nn.Identity()
+            else:
+                self.final_activation = nn.Softmax()
         elif final_act == 'softmax_logit':
             self.final_activation = nn.LogSoftmax()
         elif final_act.startswith('elu-'):
             self.final_activation = nn.ELU(alpha=float(final_act.split('-')[1]))
         elif final_act.startswith('leaky-'):
             self.final_activation = nn.LeakyReLU(negative_slope=float(final_act.split('-')[1]))
+        elif final_act == 'linear':
+            self.final_activation = nn.Identity()
 
     def forward(self, input, hidden):
         '''
@@ -52,16 +60,19 @@ class GRU4REC(nn.Module):
 
         if self.embedding_dim == -1:
             embedded = self.onehot_encode(input)
-            if self.training and self.dropout_input > 0: embedded = self.embedding_dropout(embedded)
             embedded = embedded.unsqueeze(0)
         else:
             embedded = input.unsqueeze(0)
             embedded = self.look_up(embedded)
+        if self.training and self.dropout_input > 0: embedded = self.embedding_dropout(embedded)
 
-        output, hidden = self.gru(embedded, hidden) #(num_layer, B, H)
+        output, hidden = self.gru(embedded, hidden) #(num_layer, B, H)            
         output = output.view(-1, output.size(-1))  #(B,H)
-        logit = self.final_activation(self.h2o(output))
-
+        if self.dropout_hidden > 0:
+            output = self.drop_hidden(output)
+        logit = self.h2o(output)
+        if self.final_activation is not None:
+            logit = self.final_activation(logit)
         return logit, hidden
 
     def init_emb(self):

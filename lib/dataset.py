@@ -65,7 +65,7 @@ class Dataset(object):
 
 
 class DataLoader():
-    def __init__(self, dataset, batch_size=50):
+    def __init__(self, dataset, batch_size=50, use_correct_mask_reset=False):
         """
         A class for creating session-parallel mini-batches.
 
@@ -75,6 +75,7 @@ class DataLoader():
         """
         self.dataset = dataset
         self.batch_size = batch_size
+        self.use_correct_mask_reset = use_correct_mask_reset
 
     def __iter__(self):
         """ Returns the iterator for producing session-parallel training mini-batches.
@@ -108,6 +109,8 @@ class DataLoader():
                 input = torch.LongTensor(idx_input)
                 target = torch.LongTensor(idx_target)
                 yield input, target, mask
+                if (i == 0) and self.use_correct_mask_reset:
+                    mask = []
 
             # click indices where a particular session meets second-to-last element
             start = start + (minlen - 1)

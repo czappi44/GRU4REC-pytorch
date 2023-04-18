@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 
 class LossFunction(nn.Module):
-    def __init__(self, loss_type='TOP1', use_cuda=False):
+    def __init__(self, loss_type='TOP1', use_cuda=False, use_correct_loss=False):
         """ An abstract loss function that can supports custom loss functions compatible with PyTorch."""
         super(LossFunction, self).__init__()
         self.loss_type = loss_type
@@ -19,7 +19,10 @@ class LossFunction(nn.Module):
         elif loss_type == 'TOP1-max':
             self._loss_fn = TOP1_max()
         elif loss_type == 'BPR-max':
-            self._loss_fn = BPR_max()
+            if use_correct_loss:
+                self._loss_fn = BPR_max_correct()
+            else:
+                self._loss_fn = BPR_max()
         else:
             raise NotImplementedError
 
@@ -72,6 +75,22 @@ class BPR_max(nn.Module):
         logit_softmax = F.softmax(logit, dim=1)
         diff = logit.diag().view(-1, 1).expand_as(logit) - logit
         loss = -torch.log(torch.mean(logit_softmax * torch.sigmoid(diff)))
+        return loss
+
+
+class BPR_max_correct(nn.Module):
+    def __init__(self):
+        super(BPR_max_correct, self).__init__()
+    @staticmethod
+    def softmax_neg(X):
+        mask_pos = 1.0 - torch.eye(*X.shape).to(X.get_device())
+        X = X * mask_pos
+        e_x = torch.exp(X - torch.max(X, dim=1, keepdim=True).values) * mask_pos
+        return e_x / torch.sum(e_x, dim=1, keepdim=True)
+    def forward(self, logit):
+        softmax_scores_neg = self.softmax_neg(logit)
+        p = F.sigmoid(torch.diag(logit).view(-1, 1) - logit)
+        loss = torch.mean(-torch.log(torch.sum(p * softmax_scores_neg, axis=1)+1e-24))
         return loss
 
 
